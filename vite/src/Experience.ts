@@ -136,7 +136,7 @@ class Experience {
         this.npcManager.spawn({ x:  8, y: -1.5, z: -5  })
         this.npcManager.spawn({ x: -6, y: -1.5, z: -14 })
 
-        this.loader.gltfLoad.load("/models/the_lost_portal_-_enviroment.glb", (gltf) => {
+        this.loader.gltfLoad.load("/models/enviroment.glb", (gltf) => {
             const model = gltf.scene
             model.scale.set(.01, .01, .01)
             model.position.set(0, -2, 0)
