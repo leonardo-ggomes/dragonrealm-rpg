@@ -64,10 +64,13 @@ class NPCManager {
             }
         }
 
-        // ── Remove NPCs que caíram fora da cena ───────────────────────────────
-        this.npcs = this.npcs.filter(n => n.isAlive || n.parent !== null)
-
         let totalDamage = 0
+
+        // FIX: coleta NPCs a remover APÓS o loop — nunca muta this.npcs durante a iteração.
+        // Antes: this.npcs = this.npcs.filter(...) dentro do for..of substituía a referência
+        // do array no meio da iteração. Experience.update() lia this.npcManager.npcs logo
+        // depois e via o mesmo count — nenhuma kill era detectada e nenhum poder era liberado.
+        const toRemove: NPC[] = []
 
         for (const npc of this.npcs) {
             const dist = npc.position.distanceTo(playerPos)
@@ -77,9 +80,8 @@ class NPCManager {
                 npc.update(delta)
                 const ready = npc.updateDeath(delta)
                 if (ready) {
-                    this.scheduleRespawn(npc)
-                    // Remove da lista de ativos temporariamente
-                    this.npcs = this.npcs.filter(n => n !== npc)
+                    // Marca para remoção — NÃO muta this.npcs aqui
+                    toRemove.push(npc)
                 }
                 continue
             }
@@ -119,6 +121,14 @@ class NPCManager {
                     experience.applyPlayerKnockback(dir, 3.5)
                 }
             }
+        }
+
+        // FIX: aplica remoções APÓS o loop terminar.
+        // Só agora this.npcs é modificado — Experience.update() lê npcs.filter(n => n.isAlive)
+        // depois desta função retornar, então prevAlive > nowAlive é detectado corretamente.
+        for (const npc of toRemove) {
+            this.scheduleRespawn(npc)
+            this.npcs = this.npcs.filter(n => n !== npc)
         }
 
         this.resolveNpcCollisions()

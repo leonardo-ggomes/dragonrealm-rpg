@@ -79,6 +79,9 @@ class NPC extends Object3D {
     // Dano pendente (lido pelo NPCManager via flushDamage)
     _pendingDamage = 0
 
+    // Flag lido por Experience.update() para registrar kill exatamente uma vez
+    killCounted = false
+
     constructor(loader: Loader) {
         super()
         this.loader = loader
@@ -150,6 +153,7 @@ class NPC extends Object3D {
     private die() {
         if (!this.isAlive) return
         this.isAlive     = false
+        this.killCounted = false   // será marcado true por Experience.update() no próximo frame
         this.aiState     = "dead"
         this.isAttacking = false
         this.velocity.set(0, 0, 0)
@@ -303,7 +307,9 @@ class NPC extends Object3D {
     // ── Respawn ───────────────────────────────────────────────────────────────
 
     respawn(position: Vector3) {
-        this.isAlive        = false
+        // FIX Bug 3: NÃO seta isAlive=false aqui para evitar que Experience.update()
+        // conte este NPC como "morto novamente" no mesmo frame, disparando onDragonKilled
+        // a mais. Todo o estado é preparado antes de isAlive=true ao final.
         this.health         = this.maxHealth
         this.aiState        = "idle"
         this.isAttacking    = false
@@ -315,6 +321,7 @@ class NPC extends Object3D {
         this.velocity.set(0, 0, 0)
         this.knockbackVel.set(0, 0, 0)
         this._pendingDamage = 0
+        this.killCounted    = false
 
         this.position.copy(position)
 
@@ -334,6 +341,7 @@ class NPC extends Object3D {
             if (child instanceof Mesh) child.visible = true
         })
 
+        // FIX Bug 3: isAlive=true apenas depois de todo o estado estar pronto
         this.isAlive = true
     }
 

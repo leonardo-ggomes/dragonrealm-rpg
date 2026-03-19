@@ -62,6 +62,17 @@ class Experience {
 
     private readonly DOWN = new Vector3(0, -1, 0)
 
+    // Arrays de hits reutilizados — evita alocar new[] e GC spikes a cada frame
+    private _groundHits: any[] = []
+    private _wallHits:   any[] = []
+    private _mouseHits:  any[] = []
+
+    // Vectors scratch pré-alocados para wall collision — sem clone() no loop quente
+    private _wallOrigin = new Vector3()
+    private _wallNormal = new Vector3()
+
+    // Mouse throttle — só recomputa raycasting quando o mouse realmente se moveu
+    private _mouseDirty = false
     // Fisica vertical
     private velocityY          = 0
     private readonly GRAVITY   = -20
@@ -81,7 +92,7 @@ class Experience {
     private readonly KNOCKBACK_FRICTION = 14.0
 
     // Ponto de spawn inicial — registrado quando o mapa termina de carregar
-    private spawnPoint = new Vector3(0, 10, 0)
+    private spawnPoint = new Vector3(0, 2, 0)
 
     // Input
     keysPressed = new Set<string>()
@@ -156,13 +167,13 @@ class Experience {
             this.mainScene.scene.add(directLight)
             this.mainScene.scene.add(model)
 
-            this.player.position.set(0, 10, 0)
-            this.spawnPoint.set(0, 10, 0)
+            this.player.position.set(0, 2, 0)
+            this.spawnPoint.set(0, 2, 0)
             this.mainScene.scene.add(this.player)
 
             this.hud.setHealth(this.player.health)
             this.hud.setStamina(this.playerStamina)
-            this.hud.setAmmo(6, 24)
+            this.hud.setAmmo(0, 0)
 
             // Mapa carregado — libera a tela de loading
             this.gameUI.setProgress(100)
@@ -207,6 +218,7 @@ class Experience {
                 (e.clientX / window.innerWidth)  *  2 - 1,
                 (e.clientY / window.innerHeight) * -2 + 1
             )
+            this._mouseDirty = true
         })
 
         window.addEventListener("mousedown", (e) => {
@@ -251,28 +263,29 @@ class Experience {
     // ── Mouse mundo (raycaster reutilizado) ──────────────────────────────────
 
     private updateMouseWorldPosition() {
+        // Só recalcula se o mouse se moveu desde o último frame — sem raycast desnecessário
+        if (!this._mouseDirty) return
+        this._mouseDirty = false
+
         this.mouseRaycaster.setFromCamera(this.screenMouse, this.camera.perspectiveCamera)
 
-        // Primeiro tenta acertar o mapa real
         if (this.collisionMeshes.length > 0) {
-            const hits: any[] = []
-            this.collisionMeshes.forEach(m =>
-                hits.push(...this.mouseRaycaster.intersectObject(m, true))
-            )
-            if (hits.length > 0) {
-                hits.sort((a, b) => a.distance - b.distance)
-                this.mouseWorldPos.copy(hits[0].point)
+            this._mouseHits.length = 0
+            for (let i = 0; i < this.collisionMeshes.length; i++) {
+                this.mouseRaycaster.intersectObject(this.collisionMeshes[i], true, this._mouseHits)
+            }
+            if (this._mouseHits.length > 0) {
+                this._mouseHits.sort((a, b) => a.distance - b.distance)
+                this.mouseWorldPos.copy(this._mouseHits[0].point)
                 return
             }
         }
 
         // Fallback: plano horizontal na altura do player
         const ray   = this.mouseRaycaster.ray
-        const ny    = 1
-        const d     = -this.player.position.y
-        const denom = ray.direction.dot(new Vector3(0, ny, 0))
+        const denom = ray.direction.y
         if (Math.abs(denom) > 1e-6) {
-            const t = -(ray.origin.y * ny + d) / denom
+            const t = -(ray.origin.y - this.player.position.y) / denom
             if (t > 0) ray.at(t, this.mouseWorldPos)
         }
     }
@@ -298,22 +311,22 @@ class Experience {
         this.groundRaycaster.set(origin, this.DOWN)
         this.groundRaycaster.far = 1.8
 
-        const intersects: any[] = []
-        this.collisionMeshes.forEach(mesh =>
-            intersects.push(...this.groundRaycaster.intersectObject(mesh, true))
-        )
+        this._groundHits.length = 0
+        for (let i = 0; i < this.collisionMeshes.length; i++) {
+            this.groundRaycaster.intersectObject(this.collisionMeshes[i], true, this._groundHits)
+        }
 
-        if (intersects.length === 0) {
+        if (this._groundHits.length === 0) {
             this.isGrounded = false
             return
         }
 
-        intersects.sort((a, b) => a.distance - b.distance)
-        const surfaceY    = intersects[0].point.y
+        this._groundHits.sort((a, b) => a.distance - b.distance)
+        const surfaceY    = this._groundHits[0].point.y
         const distToFloor = this.player.position.y - surfaceY
 
         if (distToFloor <= 0.12 && this.velocityY <= 0.5) {
-            this.player.position.y = surfaceY   // snap direto, sem lerp
+            this.player.position.y = surfaceY
             this.velocityY         = 0
             this.isGrounded        = true
             this.coyoteTimer       = this.COYOTE_TIME
@@ -350,43 +363,41 @@ class Experience {
     private resolveWallCollisions() {
         if (this.collisionMeshes.length === 0) return
 
-        const origin = this.player.position.clone()
-        origin.y += 0.8  // centro da capsula
+        // Usa vector scratch pré-alocado — sem clone() no loop quente
+        this._wallOrigin.copy(this.player.position)
+        this._wallOrigin.y += 0.8
 
         for (const dir of WALL_PROBE_DIRS) {
-            this.wallRaycaster.set(origin, dir)
+            this.wallRaycaster.set(this._wallOrigin, dir)
             this.wallRaycaster.far = this.WALL_PROBE_LEN
 
-            const hits: any[] = []
-            this.collisionMeshes.forEach(m =>
-                hits.push(...this.wallRaycaster.intersectObject(m, true))
-            )
-
-            if (hits.length === 0) continue
-            hits.sort((a, b) => a.distance - b.distance)
-
-            const hit     = hits[0]
-            const overlap = this.WALL_PROBE_LEN - hit.distance
-
-            if (overlap <= 0) continue
-
-            // Usa a normal da face para pushout mais preciso
-            let normal: Vector3
-            if (hit.face) {
-                normal = hit.face.normal.clone()
-                    .transformDirection(hit.object.matrixWorld)
-            } else {
-                normal = dir.clone().negate()
+            // Reusa o mesmo array a cada probe — length=0 limpa sem realocar
+            this._wallHits.length = 0
+            for (let i = 0; i < this.collisionMeshes.length; i++) {
+                this.wallRaycaster.intersectObject(this.collisionMeshes[i], true, this._wallHits)
             }
 
-            normal.y = 0
-            if (normal.lengthSq() < 0.001) continue
-            normal.normalize()
+            if (this._wallHits.length === 0) continue
+            this._wallHits.sort((a, b) => a.distance - b.distance)
 
-            this.player.position.x += normal.x * overlap
-            this.player.position.z += normal.z * overlap
+            const hit     = this._wallHits[0]
+            const overlap = this.WALL_PROBE_LEN - hit.distance
+            if (overlap <= 0) continue
 
-            // Cancela componente de velocidade do player na direcao do muro
+            if (hit.face) {
+                this._wallNormal.copy(hit.face.normal)
+                    .transformDirection(hit.object.matrixWorld)
+            } else {
+                this._wallNormal.copy(dir).negate()
+            }
+
+            this._wallNormal.y = 0
+            if (this._wallNormal.lengthSq() < 0.001) continue
+            this._wallNormal.normalize()
+
+            this.player.position.x += this._wallNormal.x * overlap
+            this.player.position.z += this._wallNormal.z * overlap
+
             const velDot = this.player.velocity.dot(dir)
             if (velDot > 0) {
                 this.player.velocity.x -= dir.x * velDot
@@ -558,7 +569,7 @@ class Experience {
 
         const delta = Math.min(this.clock.getDelta(), 0.05)
 
-        this.camera.update(this.player)
+        this.camera.update(this.player, delta)
         this.updateMouseWorldPosition()
 
         if (this.mouseWorldPos.lengthSq() > 0) {
@@ -590,25 +601,26 @@ class Experience {
         this.updateKnockback(delta)
 
         // NPCs - passa 'this' para knockback e LOD
-        const prevAlive = this.npcManager.npcs.filter(n => n.isAlive).length
         const damageThisFrame = this.npcManager.update(delta, this.player.position, this, this.vfx)
-        const nowAlive = this.npcManager.npcs.filter(n => n.isAlive).length
-
-        // Detecta kills: se um NPC passou de vivo para morto neste frame
-        if (nowAlive < prevAlive) {
-            const killed = prevAlive - nowAlive
-            for (let k = 0; k < killed; k++) {
-                this.powers.onDragonKilled(this.player.position.clone(), new Vector3())
-            }
-            this.hud.setAmmo(0, 0)   // atualiza kill count no HUD via setAmmo
-        }
 
         if (damageThisFrame > 0 && this.player.lifeState === "alive") {
             this.player.takeDamage(damageThisFrame)
             this.hud.setHealth(this.player.health)
         }
 
+        // player.update() dispara o onHitWindow → npc.takeDamage() → isAlive=false.
+        // A detecção de kills DEVE acontecer depois disto.
         this.player.update(delta)
+
+        // Detecta mortes pelo flag killCounted no próprio NPC — evita depender de
+        // comparação de contagem que quebra quando takeDamage ocorre fora de ordem.
+        for (const npc of this.npcManager.npcs) {
+            if (!npc.isAlive && !npc.killCounted) {
+                npc.killCounted = true
+                this.powers.onDragonKilled(this.player.position.clone(), npc.position.clone())
+                this.hud.setAmmo(this.powers.getKillCount(), 0)
+            }
+        }
 
         // ── Gerencia morte e respawn do player ────────────────────────────────
         this.handlePlayerLifecycle()

@@ -145,17 +145,27 @@ class PowerInventory {
     onDragonKilled(_playerPos: Vector3, _npcPos: Vector3) {
         this.killCount++
         this.killsDisplay.textContent = String(this.killCount)
+        this.root.querySelector("#inv-kill-count")!.textContent = String(this.killCount)
 
-        // Verifica novos desbloqueios
-        const newUnlock = this.powers.find(
+        // FIX Bug 1: usa filter para desbloquear TODOS os poderes elegíveis de uma vez,
+        // não apenas o primeiro. Garante que kills acumuladas desbloqueiem múltiplos poderes.
+        const newUnlocks = this.powers.filter(
             p => !p.unlocked && p.killsRequired <= this.killCount
         )
-        if (newUnlock) {
-            newUnlock.unlocked = true
-            this.showUnlockNotification(newUnlock)
+
+        if (newUnlocks.length > 0) {
+            newUnlocks.forEach(power => {
+                power.unlocked = true
+                this.showUnlockNotification(power)
+            })
             this.updateHotbar()
             this.updatePanel()
         }
+    }
+
+    /** Retorna o total de kills — usado pelo HUD */
+    getKillCount(): number {
+        return this.killCount
     }
 
     /** Chame todo frame para decrementar cooldowns */
@@ -350,7 +360,6 @@ class PowerInventory {
         if (this.panelOpen) {
             this.updatePanel()
             this.panelEl.classList.add("open")
-            // Pausa o jogo na prática — pointer-events
         } else {
             this.panelEl.classList.remove("open")
         }
@@ -364,8 +373,6 @@ class PowerInventory {
             const card = document.createElement("div")
             card.className = "inv-card" + (power.unlocked ? " unlocked" : " locked-card")
             if (i === this.activePower && power.unlocked) card.classList.add("equipped")
-
-            const cdReady = power.unlocked && power.currentCooldown <= 0
 
             card.innerHTML = `
                 <div class="inv-card-icon" style="color:${power.unlocked ? power.color : "rgba(255,255,255,0.15)"}">
@@ -423,7 +430,7 @@ class PowerInventory {
         `
         document.body.appendChild(notif)
 
-        // Animação de entrada e saída
+        // Animação de entrada e saída com delay escalonado para múltiplos desbloqueios
         requestAnimationFrame(() => notif.classList.add("show"))
         setTimeout(() => {
             notif.classList.remove("show")
