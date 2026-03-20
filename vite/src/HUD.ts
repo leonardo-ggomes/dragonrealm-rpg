@@ -198,11 +198,16 @@ class HUD {
 
       // Inimigos — losangos vermelhos com glow
       this.enemyBlips.forEach(blip => {
+          // Guarda contra NaN — posição inválida do NPC não deve travar o canvas
+          if (!isFinite(blip.x) || !isFinite(blip.z)) return
+
           const d  = Math.hypot(blip.x, blip.z)
           const nx = d > 1 ? blip.x / d : blip.x
           const nz = d > 1 ? blip.z / d : blip.z
           const bx = cx + nx * r * 0.88
           const by = cx + nz * r * 0.88
+
+          if (!isFinite(bx) || !isFinite(by)) return
 
           // Glow
           const g = ctx.createRadialGradient(bx, by, 0, bx, by, 7)

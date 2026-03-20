@@ -73,6 +73,12 @@ class Experience {
 
     // Mouse throttle — só recomputa raycasting quando o mouse realmente se moveu
     private _mouseDirty = false
+
+    // Scratch vectors para VFX no loop quente — sem clone() por frame
+    private _vfxPos     = new Vector3()
+    private _vfxForward = new Vector3()
+    private _vfxEmpty   = new Vector3()
+    private _groundOrigin = new Vector3()
     // Fisica vertical
     private velocityY          = 0
     private readonly GRAVITY   = -20
@@ -305,10 +311,10 @@ class Experience {
     // ── Ground snap (sem lerp) ────────────────────────────────────────────────
 
     private checkGround() {
-        const origin = this.player.position.clone()
-        origin.y += 0.5
+        this._groundOrigin.copy(this.player.position)
+        this._groundOrigin.y += 0.5
 
-        this.groundRaycaster.set(origin, this.DOWN)
+        this.groundRaycaster.set(this._groundOrigin, this.DOWN)
         this.groundRaycaster.far = 1.8
 
         this._groundHits.length = 0
@@ -352,7 +358,7 @@ class Experience {
 
                 // Toca animação se existir, senão cai de volta pro Run/Walk
                 if (this.player.clips["CharacterArmature|Jump_Full_Short"]) {
-                    this.player.setState("CharacterArmature|Jump_Full_Short", 1.4)
+                    this.player.playLoop("CharacterArmature|Jump_Full_Short", 1.4)
                 }
             }
         }
@@ -468,6 +474,9 @@ class Experience {
         this.hud.clearEnemies()
         for (const npc of this.npcManager.npcs) {
             if (!npc.isAlive) continue
+            // Guarda contra NaN — posição inválida durante roll/respawn não deve crashar o minimap
+            if (!isFinite(npc.position.x) || !isFinite(npc.position.z)) continue
+            if (!isFinite(this.player.position.x) || !isFinite(this.player.position.z)) continue
             const rel = npc.position.clone().sub(this.player.position)
             this.hud.addEnemy({ id: npc.uuid, x: rel.x / MINIMAP_RANGE, z: rel.z / MINIMAP_RANGE })
             if (rel.length() < 4) this.hud.showAlert("INIMIGO PROXIMO!", 1500)
@@ -561,15 +570,13 @@ class Experience {
 
     update = () => {
         requestAnimationFrame(this.update)
-        // this.stats.update()
         this.renderer.update()
 
-        // Não processa lógica até o player fechar as telas de UI
         if (!this.gameReady) return
 
         const delta = Math.min(this.clock.getDelta(), 0.05)
 
-        this.camera.update(this.player, delta)
+        // ── Input ─────────────────────────────────────────────────────────────
         this.updateMouseWorldPosition()
 
         if (this.mouseWorldPos.lengthSq() > 0) {
@@ -582,25 +589,27 @@ class Experience {
             this.keysPressed.has("a") || this.keysPressed.has("d")
         )
 
+        // ── Movimento do player ───────────────────────────────────────────────
         const inputDir = this.camera.getIsometricDirection(this.keysPressed)
         this.player.applyMovement(inputDir, this.isRunning, delta)
 
-        // Fisica vertical
         this.handleJump(delta)
         this.applyGravity(delta)
         this.checkGround()
 
-        // Void recovery — player caiu fora do mapa (só quando vivo)
         if (this.player.lifeState === "alive" && this.player.position.y < VOID_Y) {
             this.respawnPlayer()
         }
 
-        // Colisoes
         this.resolveWallCollisions()
         this.resolvePlayerNpcCollisions()
         this.updateKnockback(delta)
 
-        // NPCs - passa 'this' para knockback e LOD
+        // ── Câmera DEPOIS do movimento — lê posição já atualizada deste frame ─
+        // Antes estava antes de applyMovement(), causando lag de 1 frame e tremor.
+        this.camera.update(this.player, delta)
+
+        // ── NPCs ──────────────────────────────────────────────────────────────
         const damageThisFrame = this.npcManager.update(delta, this.player.position, this, this.vfx)
 
         if (damageThisFrame > 0 && this.player.lifeState === "alive") {
@@ -608,12 +617,8 @@ class Experience {
             this.hud.setHealth(this.player.health)
         }
 
-        // player.update() dispara o onHitWindow → npc.takeDamage() → isAlive=false.
-        // A detecção de kills DEVE acontecer depois disto.
         this.player.update(delta)
 
-        // Detecta mortes pelo flag killCounted no próprio NPC — evita depender de
-        // comparação de contagem que quebra quando takeDamage ocorre fora de ordem.
         for (const npc of this.npcManager.npcs) {
             if (!npc.isAlive && !npc.killCounted) {
                 npc.killCounted = true
@@ -622,31 +627,30 @@ class Experience {
             }
         }
 
-        // ── Gerencia morte e respawn do player ────────────────────────────────
         this.handlePlayerLifecycle()
 
-        // ── VFX ───────────────────────────────────────────────────────────────
+        // ── VFX — sem clone() no hot path ────────────────────────────────────
         this.vfx.update(delta)
 
-        // Rastro de corrida — emite atrás do player quando está correndo
         if (this.isRunning && this.isGrounded) {
-            const forward = this.player.velocity.clone()
-            if (forward.lengthSq() > 0.01) forward.normalize()
-            this.vfx.tickRunTrail(delta, this.player.position.clone(), forward, true)
+            this._vfxForward.copy(this.player.velocity)
+            if (this._vfxForward.lengthSq() > 0.01) this._vfxForward.normalize()
+            this._vfxPos.copy(this.player.position)
+            this.vfx.tickRunTrail(delta, this._vfxPos, this._vfxForward, true)
         } else {
-            this.vfx.tickRunTrail(delta, this.player.position.clone(), new Vector3(), false)
+            this._vfxPos.copy(this.player.position)
+            this.vfx.tickRunTrail(delta, this._vfxPos, this._vfxEmpty, false)
         }
 
-        // Fogo sutil dos dragões — emite continuamente enquanto vivos
         for (const npc of this.npcManager.npcs) {
-            this.vfx.tickDragonFire(delta, npc.uuid, npc.position.clone(), npc.isAlive)
+            this._vfxPos.copy(npc.position)
+            this.vfx.tickDragonFire(delta, npc.uuid, this._vfxPos, npc.isAlive)
         }
 
+        // ── HUD / UI ──────────────────────────────────────────────────────────
         this.updateStamina(delta)
         this.updateMinimapEnemies()
         this.hud.update(Math.PI * 1.25)
-
-        // Atualiza cooldowns do inventário
         this.powers.update(delta)
     }
 
